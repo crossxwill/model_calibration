@@ -73,7 +73,8 @@ In reality, the data generating processes are unknown. If you choose to use mode
 ## Train an industry model (uncalibrated)
 
 ```{r}
-industry_model <- glm(default_event ~ credit_score, data=industry_df, family=binomial)
+industry_model <- glm(default_event ~ credit_score, data=industry_df,
+                      family=binomial)
 
 summary(industry_model)
 ```
@@ -100,7 +101,8 @@ First, append the linear risk from the uncalibrated model to the company trainin
 ```{r}
 train_company_df <- company_df[train_id, ]
 
-train_company_df$industry_linear_risk <- predict(industry_model, newdata=train_company_df, type="link")
+train_company_df$industry_linear_risk <- predict(industry_model,
+                                                 newdata=train_company_df, type="link")
 
 summary(train_company_df)
 ```
@@ -108,7 +110,8 @@ summary(train_company_df)
 Second, train a calibrated model. Notice, that I am using the company data set and not the industry data set in the calibration step.
 
 ```{r}
-calibrated_model <- glm(default_event ~ industry_linear_risk, data=train_company_df, family=binomial)
+calibrated_model <- glm(default_event ~ industry_linear_risk,
+                        data=train_company_df, family=binomial)
 
 summary(calibrated_model)
 ```
@@ -124,13 +127,15 @@ test_company_df <- company_df[-train_id,]
 Second, append the industry linear risk to each observation in the test data.
 
 ```{r}
-test_company_df$industry_linear_risk <- predict(industry_model, newdata = test_company_df, type="link")
+test_company_df$industry_linear_risk <- predict(industry_model,
+                                                newdata = test_company_df, type="link")
 ```
 
 Third, execute the calibrated model on the test data. Notice that I'm using `type="response"` to get the probability of default.
 
 ```{r}
-test_company_df$pred_calibrated_default <- predict(calibrated_model, newdata=test_company_df, type="response")
+test_company_df$pred_calibrated_default <- predict(calibrated_model,
+                                                   newdata=test_company_df, type="response")
 ```
 
 For comparison purposes, let us get the probability of default from the uncalibrated industry model as well.
