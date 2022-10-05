@@ -1,0 +1,201 @@
+---
+title: "Model Calibration"
+author: "William Chiu"
+date: "2022-10-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Summary
+
+A company may not have sufficient data to train a logistic regression model if the sample size is small or the number of events is rare. In the context of banking, loan defaults are generally rare (less than 10%). For a bank with strong underwriting standards, loans defaults could be extremely rare (less than 1%). 
+
+Through two simulated data sets, I show a model calibration approach:
+
+1. Train a model using a large-size industry data set with a rare event rate
+2. Calibrate the model to a small-size internal data set with a small number of events
+3. Test the calibrated model on an unseen medium-size internal data set with a similar event rate as step 2
+
+The calibration approach reduces the prediction bias, that arises from  differences between the industry and internal data sets. The terms "internal data set" and "company data set" are used interchangeably.
+
+## Simulate industry data set (n = 1 MM)
+
+```{r}
+library(tidyverse) 
+library(caTools)
+
+set.seed(1)
+
+credit_score <- rlnorm(n = 1e6, meanlog = 3, sdlog = 1)
+
+linear_risk <- 12 + -2*credit_score + rnorm(1e6)
+
+default_event <- rbinom(n = 1e6, size=1, prob=boot::inv.logit(linear_risk))
+
+industry_df <- data.frame(default_event=default_event,
+                          credit_score=credit_score)
+
+summary(industry_df)
+```
+
+The industry data set has an overall default rate of `r mean(industry_df$default_event)`. The middle 50% of the credit scores are between `r quantile(industry_df$credit_score, probs=c(0.25, 0.75))`.
+
+## Simulate internal data set (n = 10,000)
+
+```{r}
+set.seed(1)
+
+credit_score <- rlnorm(n = 1e4, meanlog = 3.5, sdlog = 1)
+
+linear_risk <- 1.5 + -0.9*credit_score + rnorm(1e4)
+
+default_event <- rbinom(n = 1e4, size=1, prob=boot::inv.logit(linear_risk))
+
+company_df <- data.frame(default_event=default_event,
+                          credit_score=credit_score)
+
+summary(company_df)
+```
+
+The internal data set has an overall default rate of `r mean(company_df$default_event)`. The middle 50% of the credit scores are between `r quantile(company_df$credit_score, probs=c(0.25, 0.75))`.
+
+The internal data set has a much lower default rate due to much more favorable credit score distribution. 
+
+At first glance, the two data sets appear very different from each other based on summary statistics. However, if you examine the data generating processes, you would notice that both processes share a common risk driver -- credit score. As credit scores increase, the linear risk falls in both data sets. 
+
+However, in the internal data set, linear risk is less sensitive to credit scores than the industry data set. The intercepts are also different between the two data generating processes. As a result of the differences in processes, training a model on the industry data and applying the uncalibrated model on the internal data set would lead to biased predictions.
+
+In reality, the data generating processes are unknown. If you choose to use model calibration, you're making an assumption that the drivers for the industry response and for the internal response are nearly identical.
+
+## Train an industry model (uncalibrated)
+
+```{r}
+industry_model <- glm(default_event ~ credit_score, data=industry_df, family=binomial)
+
+summary(industry_model)
+```
+
+## Sample the company data set
+
+To avoid confusion, I will refer to the internal data set as the "company data set". If you are using industry data, then your company data set is probably small (and/or small number of events). If the company data set was large and the events were plentiful, we could have skipped the industry model altogether and fit a logistic regression directly on the company data set. 
+
+The sampling below reflects a realistic sample size with a small number of default events.
+
+```{r}
+train_id <- sample.split(company_df$default_event, SplitRatio=0.1)
+
+company_df[train_id, ] %>% 
+  group_by(default_event) %>% 
+  summarize(count=n())
+```
+For the purpose of calibration, the company data set has only `r sum(company_df[train_id,'default_event'])` defaults.
+
+## Train a calibrated model
+
+First, append the linear risk from the uncalibrated model to the company training set. Notice that `type="link"`.
+
+```{r}
+train_company_df <- company_df[train_id, ]
+
+train_company_df$industry_linear_risk <- predict(industry_model, newdata=train_company_df, type="link")
+
+summary(train_company_df)
+```
+
+Second, train a calibrated model. Notice, that I am using the company data set and not the industry data set in the calibration step.
+
+```{r}
+calibrated_model <- glm(default_event ~ industry_linear_risk, data=train_company_df, family=binomial)
+
+summary(calibrated_model)
+```
+
+## Test the calibrated model
+
+First, get the test data set.
+
+```{r}
+test_company_df <- company_df[-train_id,]
+```
+
+Second, append the industry linear risk to each observation in the test data.
+
+```{r}
+test_company_df$industry_linear_risk <- predict(industry_model, newdata = test_company_df, type="link")
+```
+
+Third, execute the calibrated model on the test data. Notice that I'm using `type="response"` to get the probability of default.
+
+```{r}
+test_company_df$pred_calibrated_default <- predict(calibrated_model, newdata=test_company_df, type="response")
+```
+
+For comparison purposes, let us get the probability of default from the uncalibrated industry model as well.
+
+```{r}
+test_company_df$pred_industry_default <- boot::inv.logit(test_company_df$industry_linear_risk)
+
+summary(test_company_df)
+```
+
+Since the calibrated linear risk is a linear transformation of the uncalibrated linear risk, we expect the AUC to be similar before and after calibration.
+
+```{r}
+with(test_company_df, colAUC(pred_calibrated_default, default_event))
+
+with(test_company_df, colAUC(pred_industry_default, default_event))
+
+```
+
+A better comparison is to bin the predicted default rates into deciles and compare actual and predicted default rates in each bin.
+
+First, create deciles for each model.
+
+```{r}
+test_df_with_deciles <- test_company_df %>% 
+  mutate(calibrated_deciles = ntile(pred_calibrated_default, 10),
+         industry_deciles = ntile(pred_industry_default, 10))
+```
+
+Second, compare actual and predicted for the calibrated model.
+
+```{r}
+test_df_with_deciles %>% 
+  group_by(calibrated_deciles) %>% 
+  summarize(actual_pd = mean(default_event),
+            pred_calibrated_pd = mean(pred_calibrated_default)) %>% 
+  pivot_longer(-calibrated_deciles) %>% 
+  ggplot(., aes(x=calibrated_deciles, y=value, color=name, linetype=name)) +
+  geom_line() +
+  scale_linetype_manual(values=c(1, 2)) +
+  scale_color_manual(values=c('black','red')) +
+  scale_x_continuous(breaks = 1:10) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw()
+  
+```
+
+Third, compare actual and predicted for the industry model.
+
+```{r}
+test_df_with_deciles %>% 
+  group_by(industry_deciles) %>% 
+  summarize(actual_pd = mean(default_event),
+            pred_industry_pd = mean(pred_industry_default)) %>% 
+  pivot_longer(-industry_deciles) %>% 
+  ggplot(., aes(x=industry_deciles, y=value, color=name, linetype=name)) +
+  geom_line() +
+  scale_linetype_manual(values=c(1, 2)) +
+  scale_color_manual(values=c('black','red')) +
+  scale_x_continuous(breaks = 1:10) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  theme_bw()
+```
+
+
+## Summary
+
+Through two simulated data sets, I show that an industry model could be calibrated to a small company data set where the number events is extremely rare. The example was focused on a binary response (default vs. not default). Calibration could be easily extended to continuous responses by swapping out `glm` with `lm`.
