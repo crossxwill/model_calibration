@@ -1,7 +1,7 @@
 ---
 title: "Model Calibration"
 author: "William Chiu"
-date: "2022-10-05"
+date: "2022-10-06"
 output: pdf_document
 ---
 
@@ -26,6 +26,7 @@ The calibration approach reduces the prediction bias, that arises from  differen
 ```{r}
 library(tidyverse) 
 library(caTools)
+library(MLmetrics)
 
 set.seed(1)
 
@@ -199,6 +200,48 @@ test_df_with_deciles %>%
   scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
   theme_bw()
 ```
+
+An alternative to plotting is to compute the log loss (lower is better).
+
+Log Loss for industry model.
+
+```{r}
+industry_log_loss <- LogLoss(test_company_df$pred_industry_default,
+                             test_company_df$default_event)
+
+industry_log_loss
+```
+
+Log Loss for calibrated model.
+
+```{r}
+calibrated_log_loss <- LogLoss(test_company_df$pred_calibrated_default,
+                               test_company_df$default_event)
+
+calibrated_log_loss
+```
+
+Log Loss for a null model (always predict using the mean default rate from the training set).
+
+```{r}
+null_log_loss <- LogLoss(rep(mean(train_company_df$default_event),
+                  nrow(test_company_df)), test_company_df$default_event)
+
+null_log_loss
+```
+
+Log Loss for a naive model (always predict 0 probability of default)
+
+```{r}
+naive_log_loss <- LogLoss(rep(0, nrow(test_company_df)),
+                          test_company_df$default_event)
+
+naive_log_loss
+```
+
+
+
+The log loss from the industry model is high. Among the null model, naive model, industry model, and calibrated model, the log loss is the lowest for the calibrated model.
 
 
 ## Summary
